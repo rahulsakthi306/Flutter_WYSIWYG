@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "wysiwyg (Flutter)",
+            "program": "lib/main.dart",
+            "cwd": "Flutter\\wysiwyg",
+            "request": "launch",
+            "type": "dart",
+            "deviceId": "edge",
+            "flutterMode": "debug",
+            "toolArgs": [
+                "--web-port",
+                "5000",
+                "--web-hostname",
+                "0.0.0.0"
+            ]
+        }
+    ]
+}

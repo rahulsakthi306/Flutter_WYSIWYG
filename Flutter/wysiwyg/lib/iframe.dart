@@ -2,9 +2,13 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:web_socket_channel/html.dart';
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
+
+import 'package:wysiwyg/provider/global.dart';
+import 'package:wysiwyg/widgets/button.dart';
 
 class CanvasWidget extends StatefulWidget {
   const CanvasWidget({super.key});
@@ -16,22 +20,30 @@ class CanvasWidget extends StatefulWidget {
 class _CanvasWidgetState extends State<CanvasWidget> {
   List<Map<String, dynamic>> widgets = [];
   late HtmlWebSocketChannel channel;
-  final double gridSize = 20.0;
+  double gridSize = 20.0;
   OverlayEntry? _contextMenuOverlay;
-  final double rowHeight = 100.0;
+  double rowHeight = 100.0;
   final int columnCount = 12;
-  final double columnWidth = 1440 / 12;
+  double columnWidth = 1440 / 12;
 
   @override
   void initState() {
     super.initState();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final screenSize = MediaQuery.of(context).size;
+      setState(() {
+        columnWidth = screenSize.width / columnCount;
+        gridSize = (columnWidth / 6).clamp(10.0, 30.0);
+        rowHeight = gridSize * 5;
+      });
+    });
 
     html.window.onContextMenu.listen((event) {
       event.preventDefault();
     });
 
     final sessionId = Uri.base.queryParameters['sessionId'] ?? 'default';
-    print('Flutter: Connecting to WebSocket with sessionId: $sessionId');
     channel = HtmlWebSocketChannel.connect('ws://192.168.2.95:8080');
 
     channel.sink.add(jsonEncode({'action': 'CONNECT', 'sessionId': sessionId}));
@@ -44,38 +56,27 @@ class _CanvasWidgetState extends State<CanvasWidget> {
         } else if (message is String) {
           msgString = message;
         } else {
-          print('Flutter: Invalid message type: $message');
           return;
         }
 
         try {
           final data = jsonDecode(msgString) as Map<String, dynamic>?;
           if (data == null || data['action'] == null) {
-            print('Flutter: Invalid or missing action in message: $msgString');
             return;
           }
-          print('Flutter: Received message: $data');
           final action = data['action'] as String;
-
-          if (action == 'REQUEST_JSON') {
-            print('Flutter: Received REQUEST_JSON, generating JSON');
-            handleSave();
-            return;
-          }
 
           setState(() {
             if (action == 'INIT') {
               widgets = [];
               final jsonData = data['data'] as Map<String, dynamic>?;
               if (jsonData == null || !jsonData.containsKey('root')) {
-                print('Flutter: Invalid or missing data in INIT message');
                 return;
               }
 
               for (var key in jsonData.keys.where((k) => k != 'root')) {
                 final w = jsonData[key] as Map<String, dynamic>?;
                 if (w == null) {
-                  print('Flutter: Skipping null widget for key: $key');
                   continue;
                 }
                 final propsMeta = w['property'] is Map
@@ -91,9 +92,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                     int.tryParse(propsMeta['rowSpan']?.toString() ?? '1') ?? 1;
                 final colSpan =
                     int.tryParse(propsMeta['colSpan']?.toString() ?? '1') ?? 1;
-
-                print(
-                    'Flutter: Processing widget $key: row=$row, col=$col, rowSpan=$rowSpan, colSpan=$colSpan');
 
                 final x = (col - 1) * columnWidth;
                 final y = (row - 1) * rowHeight;
@@ -131,21 +129,19 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                 });
               }
               print('Flutter: Initialized widgets from JSON object: $widgets');
+
+              emitJson();
             } else if (action == 'DROP') {
               final type = data['type']?.toString();
               if (type == null) {
-                print('Flutter: Missing type in DROP message');
                 return;
               }
               if (type == 'appbar' &&
                   widgets.any((w) => w['type'] == 'appbar')) {
-                print('Flutter: Cannot add another appbar, only one allowed');
                 return;
               }
               if (type == 'floatingactionbutton' &&
                   widgets.any((w) => w['type'] == 'floatingactionbutton')) {
-                print(
-                    'Flutter: Cannot add another floatingactionbutton, only one allowed');
                 return;
               }
               if (!widgets.any((w) => w['id'] == data['id']?.toString())) {
@@ -191,14 +187,13 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                   'col': data['col'] as int? ?? col,
                   'rowSpan': data['rowSpan'] as int? ?? rowSpan,
                   'colSpan': data['colSpan'] as int? ?? colSpan,
+                  'nodeProperty': data['data']['nodeProperty'],
                 });
-                print(
-                    'Flutter: Added widget: $id at $finalPos with size $snappedSize, row: $row, col: $col, rowSpan: $rowSpan, colSpan: $colSpan');
               }
+              emitJson();
             } else if (action == 'RESIZE') {
               final id = data['id']?.toString();
               if (id == null) {
-                print('Flutter: Missing id in RESIZE message');
                 return;
               }
               final idx = widgets.indexWhere((w) => w['id'] == id);
@@ -214,13 +209,11 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                 widgets[idx]['size'] = newSize;
                 widgets[idx]['rowSpan'] = rowSpan;
                 widgets[idx]['colSpan'] = colSpan;
-                print(
-                    'Flutter: Updated widget size: ${widgets[idx]['size']}, rowSpan: $rowSpan, colSpan: $colSpan');
               }
+              emitJson();
             } else if (action == 'MOVE') {
               final id = data['id']?.toString();
               if (id == null) {
-                print('Flutter: Missing id in MOVE message');
                 return;
               }
               final idx = widgets.indexWhere((w) => w['id'] == id);
@@ -236,17 +229,35 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                     data['parentId']?.toString() ?? widgets[idx]['parentId'];
                 widgets[idx]['row'] = row;
                 widgets[idx]['col'] = col;
-                print(
-                    'Flutter: Updated widget position: ${widgets[idx]['pos']}, row: $row, col: $col');
               }
+              emitJson();
             } else if (action == 'DELETE') {
               final id = data['id']?.toString();
               if (id == null) {
-                print('Flutter: Missing id in DELETE message');
                 return;
               }
               widgets.removeWhere((w) => w['id'] == id);
-              print('Flutter: Removed widget: $id');
+              emitJson();
+            } else if (action == 'UPDATE_CURRENT_NODE') {
+              final id = data['id']?.toString();
+              if (id == null) {
+                return;
+              }
+              final path = data['path']?.toString();
+              final value = data['value'];
+              if (path == null) {
+                return;
+              }
+              final pathParts = path.split('.');
+              try {
+                Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']['elementInfo']
+                        [pathParts[0]][int.tryParse(pathParts[1])]
+                    [pathParts[2]] = value;
+              } catch (e) {
+                print(
+                    'Flutter: Error updating node property at path $path: $e');
+              }
+              emitJson();
             }
           });
         } catch (err) {
@@ -270,6 +281,12 @@ class _CanvasWidgetState extends State<CanvasWidget> {
     );
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    emitJson();
+  }
+
   double snap(double val) {
     return (val / gridSize).round() * gridSize;
   }
@@ -288,7 +305,7 @@ class _CanvasWidgetState extends State<CanvasWidget> {
     );
   }
 
-  void handleSave() {
+  void emitJson() {
     final jsonOutput = {
       'root': {
         'id': 'root',
@@ -362,7 +379,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
       final isGroup = widgetType == 'group';
       final widgetId = widget['id']?.toString();
       if (widgetId == null) {
-        print('Flutter: Skipping widget with null id in handleSave');
         continue;
       }
       jsonOutput[widgetId] = {
@@ -411,18 +427,24 @@ class _CanvasWidgetState extends State<CanvasWidget> {
             'shape': 'square',
             if (widgetType == 'button') 'size': 45,
           },
-          'nodeProperty': {},
+          'nodeProperty': {
+            'nodeId': widgetId,
+            'nodeName': widget['name']?.toString() ?? widgetType,
+            'nodeType': widgetType,
+            'nodeVersion': widget['nodeProperty']['nodeVersion'] ?? 'v1',
+            ...widget['nodeProperty']
+          },
         },
         'version': 'TRL:AFR:UF-UFM:Flutter:$category:$widgetType:v1',
       };
     }
 
     channel.sink.add(jsonEncode({
-      'action': 'SAVE',
+      'action': 'JSON',
       'json': jsonOutput,
       'sessionId': Uri.base.queryParameters['sessionId'] ?? 'default',
     }));
-    print('Flutter: Sent SAVE message with JSON: ${jsonEncode(jsonOutput)}');
+    print('Flutter: Emitted JSON to REACT ');
   }
 
   bool isPointInWidget(Offset point, Map<String, dynamic> group) {
@@ -466,10 +488,8 @@ class _CanvasWidgetState extends State<CanvasWidget> {
   void _showContextMenu(Offset position, Map<String, dynamic> widget) {
     final widgetId = widget['id']?.toString();
     if (widgetId == null) {
-      print('Flutter: Cannot show context menu for widget with null id');
       return;
     }
-    print('Flutter: Showing context menu for widget $widgetId at $position');
     _hideContextMenu();
 
     final adjustedPosition = Offset(
@@ -504,22 +524,19 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                         contentPadding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 0),
                         onTap: () {
-                          print(
-                              'Flutter: Edit Node selected for widget $widgetId');
                           _hideContextMenu();
-                          _editNode(widget);
+                          setState(() {
+                            _editNode(widget);
+                          });
                         },
                       ),
-                      if (widget['type']?.toString().toLowerCase() !=
-                          'appbar') // Disable Duplicate for AppBar
+                      if (widget['type']?.toString().toLowerCase() != 'appbar')
                         ListTile(
                           title: const Text('Duplicate'),
                           dense: true,
                           contentPadding: const EdgeInsets.symmetric(
                               horizontal: 8, vertical: 0),
                           onTap: () {
-                            print(
-                                'Flutter: Duplicate selected for widget $widgetId');
                             _hideContextMenu();
                             _duplicateWidget(widget);
                           },
@@ -530,23 +547,15 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                         contentPadding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 0),
                         onTap: () {
-                          print(
-                              'Flutter: Delete selected for widget $widgetId');
                           _hideContextMenu();
                           setState(() {
-                            print(
-                                'Flutter: Widgets list length before deletion: ${widgets.length}');
                             final deleteIds = [widgetId];
                             if (widget['type'] == 'group') {
                               final descendantIds = _getDescendantIds(widgetId);
                               deleteIds.addAll(descendantIds);
-                              print(
-                                  'Flutter: Deleting group $widgetId and descendants: $descendantIds');
                             }
                             widgets.removeWhere(
                                 (w) => deleteIds.contains(w['id']));
-                            print(
-                                'Flutter: Widgets list length after deletion: ${widgets.length}');
                             for (var id in deleteIds) {
                               channel.sink.add(jsonEncode({
                                 'action': 'DELETE',
@@ -555,8 +564,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                                     Uri.base.queryParameters['sessionId'] ??
                                         'default',
                               }));
-                              print(
-                                  'Flutter: Sent DELETE message for widget $id');
                             }
                           });
                         },
@@ -576,126 +583,49 @@ class _CanvasWidgetState extends State<CanvasWidget> {
 
   void _hideContextMenu() {
     if (_contextMenuOverlay != null) {
-      print('Flutter: Hiding context menu');
       _contextMenuOverlay?.remove();
       _contextMenuOverlay = null;
     }
   }
 
-  void _editNode(Map<String, dynamic> widget) async {
+  void _editNode(Map<String, dynamic> widget) {
     final widgetId = widget['id']?.toString();
-    if (widgetId == null) {
-      print('Flutter: Cannot edit widget with null id');
-      return;
-    }
-    print('Flutter: Opening edit dialog for widget $widgetId');
-    final TextEditingController widthController =
-        TextEditingController(text: widget['size']?.width.toString() ?? '');
-    final TextEditingController heightController =
-        TextEditingController(text: widget['size']?.height.toString() ?? '');
-    final TextEditingController nameController = TextEditingController(
-        text: widget['name']?.toString() ??
-            widget['type']?.toString().toLowerCase() ??
-            'unknown');
-    final TextEditingController labelController = TextEditingController(
-        text: widget['label']?.toString() ??
-            widget['type']?.toString().toLowerCase() ??
-            'unknown');
+    // if (widgetId == null) {
+    //   return;
+    // }
 
-    final result = await showDialog<Map<String, dynamic>>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Edit Node'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(labelText: 'Name'),
-            ),
-            TextField(
-              controller: labelController,
-              decoration: const InputDecoration(labelText: 'Label'),
-            ),
-            TextField(
-              controller: widthController,
-              decoration: const InputDecoration(labelText: 'Width'),
-              keyboardType: TextInputType.number,
-            ),
-            TextField(
-              controller: heightController,
-              decoration: const InputDecoration(labelText: 'Height'),
-              keyboardType: TextInputType.number,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              print('Flutter: Edit Node canceled for widget $widgetId');
-              Navigator.pop(context);
-            },
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              print('Flutter: Edit Node saved for widget $widgetId');
-              Navigator.pop(context, {
-                'width': double.tryParse(widthController.text) ??
-                    widget['size']?.width ??
-                    120.0,
-                'height': double.tryParse(heightController.text) ??
-                    widget['size']?.height ??
-                    50.0,
-                'name': nameController.text,
-                'label': labelController.text,
-              });
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
+    final nodeData = Map<String, dynamic>.from(widget);
+    Provider.of<GlobalProvider>(context, listen: false).setCurrentNode(nodeData);
+    print('Flutter: Updated currentNode: ${Provider.of<GlobalProvider>(context, listen: false).currentNode}');
 
-    if (result != null) {
-      setState(() {
-        final newSize = snapSize(
-            Size(result['width'] as double, result['height'] as double));
-        final rowSpan = (newSize.height / rowHeight).ceil();
-        final colSpan = (newSize.width / columnWidth).ceil();
-        widget['size'] = newSize;
-        widget['name'] = result['name']?.toString();
-        widget['label'] = result['label']?.toString();
-        widget['rowSpan'] = rowSpan;
-        widget['colSpan'] = colSpan;
-        print(
-            'Flutter: Edited widget $widgetId to size: $newSize, name: ${result['name']}, label: ${result['label']}, rowSpan: $rowSpan, colSpan: $colSpan');
-      });
-      channel.sink.add(jsonEncode({
-        'action': 'RESIZE',
-        'id': widgetId,
-        'width': result['width'] as double,
-        'height': result['height'] as double,
-        'name': result['name']?.toString(),
-        'label': result['label']?.toString(),
-        'sessionId': Uri.base.queryParameters['sessionId'] ?? 'default',
-      }));
-      print('Flutter: Sent RESIZE message for widget $widgetId');
-    }
+    channel.sink.add(jsonEncode({
+      'action': 'SET_NODE_PROPERTY',
+      'id': widgetId,
+      'data': {
+        'label': widget['label'],
+        'nodeProperty': {
+          'nodeId': widgetId,
+          'nodeName': widget['name'],
+          'nodeType': widget['type']?.toString() ?? 'unknown',
+          'nodeVersion': widget['nodeProperty']?['nodeVersion'] ?? 'v1',
+          ...widget['nodeProperty'],
+        },
+      },
+      'sessionId': Uri.base.queryParameters['sessionId'] ?? 'default',
+    }));
+
+    emitJson();
   }
 
   void _duplicateWidget(Map<String, dynamic> widget) {
     final widgetId = widget['id']?.toString();
     final widgetType = widget['type']?.toString().toLowerCase() ?? 'unknown';
     if (widgetId == null) {
-      print('Flutter: Cannot duplicate widget with null id');
       return;
     }
     if (widgetType == 'appbar') {
-      print('Flutter: Cannot duplicate AppBar, only one allowed');
       return;
     }
-    print('Flutter: Duplicating widget $widgetId');
     final newId = DateTime.now().millisecondsSinceEpoch.toString();
     final pos = widget['pos'] as Offset? ?? const Offset(0, 0);
     Offset newPos = pos + const Offset(20, 20);
@@ -727,8 +657,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
         'rowSpan': rowSpan,
         'colSpan': colSpan,
       });
-      print(
-          'Flutter: Duplicated widget $widgetId to $newId at $snappedPos, row: $row, col: $col');
     });
 
     channel.sink.add(jsonEncode({
@@ -748,13 +676,11 @@ class _CanvasWidgetState extends State<CanvasWidget> {
       'colSpan': colSpan,
       'sessionId': Uri.base.queryParameters['sessionId'] ?? 'default',
     }));
-    print('Flutter: Sent DROP message for duplicated widget $newId');
   }
 
   Widget interactiveWrapper(Map<String, dynamic> w, Widget child) {
     final id = w['id']?.toString();
     if (id == null) {
-      print('Flutter: Cannot wrap widget with null id');
       return const SizedBox.shrink();
     }
 
@@ -764,8 +690,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onSecondaryTapDown: (details) {
-          print(
-              'Flutter: Right-click detected on widget $id at ${details.globalPosition}');
           _showContextMenu(details.globalPosition, w);
         },
         child: ResizableWidget(
@@ -779,8 +703,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
               w['size'] = snapped;
               w['rowSpan'] = rowSpan;
               w['colSpan'] = colSpan;
-              print(
-                  'Flutter: Resized widget $id to size: $snapped, rowSpan: $rowSpan, colSpan: $colSpan');
             });
 
             channel.sink.add(jsonEncode({
@@ -792,7 +714,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
               'colSpan': colSpan,
               'sessionId': Uri.base.queryParameters['sessionId'] ?? 'default',
             }));
-            print('Flutter: Sent RESIZE message for widget $id');
           },
           onMove: (newPos) {
             final delta = newPos - (w['pos'] as Offset? ?? const Offset(0, 0));
@@ -803,14 +724,10 @@ class _CanvasWidgetState extends State<CanvasWidget> {
               w['pos'] = snapped;
               w['row'] = row;
               w['col'] = col;
-              print(
-                  'Flutter: Moved widget $id to position: $snapped, row: $row, col: $col');
 
               final newParentId = findGroupAtPosition(snapped, id) ?? 'root';
               if (w['parentId'] != newParentId) {
                 w['parentId'] = newParentId;
-                print(
-                    'Flutter: Updated parentId of widget $id to $newParentId');
               }
 
               if (w['type'] == 'group') {
@@ -827,8 +744,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                   child['pos'] = snappedChildPos;
                   child['row'] = childRow;
                   child['col'] = childCol;
-                  print(
-                      'Flutter: Moved child widget ${child['id']} to position: $snappedChildPos, row: $childRow, col: $childCol');
                 }
               }
             });
@@ -843,7 +758,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
               'parentId': w['parentId']?.toString() ?? 'root',
               'sessionId': Uri.base.queryParameters['sessionId'] ?? 'default',
             }));
-            print('Flutter: Sent MOVE message for widget $id');
 
             if (w['type'] == 'group') {
               final children =
@@ -866,7 +780,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                   'sessionId':
                       Uri.base.queryParameters['sessionId'] ?? 'default',
                 }));
-                print('Flutter: Sent MOVE message for child widget $childId');
               }
             }
           },
@@ -891,7 +804,7 @@ class _CanvasWidgetState extends State<CanvasWidget> {
     );
   }
 
-  Widget buildWidget(Map<String, dynamic> w) {
+  Widget buildWidget(Map<String, dynamic> w, bool isEdit) {
     final size = w['size'] as Size? ?? const Size(120, 50);
     final type = w['type']?.toString().toLowerCase() ?? 'unknown';
     Widget base;
@@ -911,7 +824,7 @@ class _CanvasWidgetState extends State<CanvasWidget> {
           width: size.width,
           height: size.height,
           child: FloatingActionButton(
-            onPressed: handleSave,
+            onPressed: () {},
             tooltip: 'Save',
             child: const Icon(Icons.save),
           ),
@@ -919,13 +832,24 @@ class _CanvasWidgetState extends State<CanvasWidget> {
         break;
       case 'button':
         base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: ElevatedButton(
-            onPressed: () {},
-            child: Text(w['label']?.toString() ?? 'Button'),
-          ),
-        );
+            width: size.width,
+            height: size.height,
+            child: TorusButton(
+              text: w['label']?.toString() ?? 'Click Me',
+              varient: (Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']
+                          ?['elementInfo']?['props'] is List &&
+                      (Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']
+                                  ?['elementInfo']?['props'] as List)
+                              .length >
+                          1 &&
+                      (Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']
+                          ?['elementInfo']?['props'] as List)[1] is Map)
+                  ? (Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']
+                              ?['elementInfo']?['props'] as List)[1]['value']
+                          ?.toString() ??
+                      'secondary'
+                  : 'secondary',
+            ));
         break;
       case 'textinput':
         base = SizedBox(
@@ -1131,6 +1055,7 @@ class _CanvasWidgetState extends State<CanvasWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
     final appBarWidget = widgets.firstWhere(
       (w) => w['type']?.toString() == 'appbar',
       orElse: () => <String, dynamic>{},
@@ -1141,16 +1066,16 @@ class _CanvasWidgetState extends State<CanvasWidget> {
     return Scaffold(
       appBar: appBarWidget.isNotEmpty ? buildAppBarWidget(appBarWidget) : null,
       body: Container(
-        color: Colors.grey[300],
-        width: 1200,
+        color: Colors.white,
+        width: screenSize.width,
         height: double.infinity,
         child: Stack(
           children: [
             CustomPaint(
-              size: const Size(320, 651),
+              size: Size(screenSize.width, screenSize.height),
               painter: GridPainter(gridSize: gridSize),
             ),
-            for (var w in otherWidgets) buildWidget(w),
+            for (var w in otherWidgets) buildWidget(w, false),
           ],
         ),
       ),

@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Flutter Web Server (Custom Port)",
+            "request": "launch",
+            "type": "dart",
+            "deviceId": "web-server",
+            "flutterMode": "debug",
+            "toolArgs": [
+                "--web-port",
+                "5000",
+                "--web-hostname",
+                "0.0.0.0"
+            ]
+        }
+    ]
+}
