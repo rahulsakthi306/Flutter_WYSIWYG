@@ -15,7 +15,8 @@ class MyApp extends StatelessWidget {
     return ChangeNotifierProvider(
       create: (context) => GlobalProvider(),
       child: MaterialApp(
-        title: 'Provider Demo',
+        title: 'Flutter Editor',
+        debugShowCheckedModeBanner: false,
         theme: ThemeData(
           primarySwatch: Colors.blue,
         ),
