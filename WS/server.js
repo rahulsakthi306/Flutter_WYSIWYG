@@ -19,7 +19,7 @@ wss.on('connection', (ws) => {
     }
 
     const { action, sessionId, id, x, y, width, height, type, parentId, json } = data;
-    if (!sessionId || !['CONNECT', 'INIT', 'INIT_WIDGETS', 'DROP', 'MOVE', 'RESIZE', 'DELETE', 'REQUEST_JSON', 'JSON', 'SET_NODE_PROPERTY', 'UPDATE_CURRENT_NODE'].includes(action)) {
+    if (!sessionId || !['CONNECT', 'INIT', 'INIT_WIDGETS', 'DROP', 'MOVE', 'RESIZE', 'DELETE', 'REQUEST_JSON', 'JSON', 'SET_NODE_PROPERTY', 'UPDATE_CURRENT_NODE', 'SYNC'].includes(action)) {
       console.warn('WebSocket: Invalid message:', data);
       return;
     }
@@ -36,7 +36,7 @@ wss.on('connection', (ws) => {
     }
 
     // Update session state for DROP, MOVE, RESIZE, DELETE, INIT
-    if (['INIT', 'INIT_WIDGETS', 'DROP', 'MOVE', 'RESIZE', 'DELETE', 'JSON','SET_NODE_PROPERTY', 'UPDATE_CURRENT_NODE'].includes(action)) {
+    if (['INIT', 'INIT_WIDGETS', 'DROP', 'MOVE', 'RESIZE', 'DELETE', 'JSON','SET_NODE_PROPERTY', 'UPDATE_CURRENT_NODE', 'SYNC'].includes(action)) {
       let state = sessionStates.get(sessionId);
       if (action === 'INIT_WIDGETS') {
         // Store the full JSON (root and widget nodes)

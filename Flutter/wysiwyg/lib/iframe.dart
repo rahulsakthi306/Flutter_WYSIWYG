@@ -1,29 +1,17 @@
+// canvas_widget.dart (updated)
 import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'package:web_socket_channel/html.dart';
+import 'package:wysiwyg/builder/widget.dart';
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
 
 import 'package:wysiwyg/provider/global.dart';
-import 'package:wysiwyg/widgets/avatar.dart';
-import 'package:wysiwyg/widgets/button.dart';
-import 'package:wysiwyg/widgets/checkbox.dart';
-import 'package:wysiwyg/widgets/chip.dart';
-import 'package:wysiwyg/widgets/datepicker.dart';
-import 'package:wysiwyg/widgets/dropdown.dart';
-import 'package:wysiwyg/widgets/icon.dart';
-import 'package:wysiwyg/widgets/image.dart';
-import 'package:wysiwyg/widgets/progressbar.dart';
-import 'package:wysiwyg/widgets/radio.dart';
-import 'package:wysiwyg/widgets/slider.dart';
-import 'package:wysiwyg/widgets/switch.dart';
-import 'package:wysiwyg/widgets/text.dart';
-import 'package:wysiwyg/widgets/textarea.dart';
-import 'package:wysiwyg/widgets/textinput.dart';
-import 'package:wysiwyg/widgets/timepicker.dart';
+import 'package:wysiwyg/utils/constants.dart';
 
 class CanvasWidget extends StatefulWidget {
   const CanvasWidget({super.key});
@@ -41,28 +29,27 @@ class _CanvasWidgetState extends State<CanvasWidget> {
   final int columnCount = 12;
   double columnWidth = 1440 / 12;
 
-  String sessionId =  '1';
+  String sessionId = Uri.base.queryParameters['sessionId'] ?? '';
 
   @override
   void initState() {
     super.initState();
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-  final screenSize = MediaQuery.of(context).size;
-  setState(() {
-    columnWidth = screenSize.width / columnCount;
-    gridSize = 8.0; 
-    rowHeight = screenSize.height / 100; 
-  });
-});
+      setState(() {
+        columnWidth = 375 / columnCount;
+        rowHeight = 812 / 100; 
+        gridSize = 8.0;
+      });
+    });
 
     html.window.onContextMenu.listen((event) {
       event.preventDefault();
     });
 
-    channel = HtmlWebSocketChannel.connect('ws://192.168.2.95:8080');
+    channel = HtmlWebSocketChannel.connect(dotenv.env['WS_URL'] ?? '');
 
-    channel.sink.add(jsonEncode({'action': 'CONNECT', 'sessionId': sessionId}));
+    channel.sink.add(jsonEncode({'action': Constants.connect, 'sessionId': sessionId}));
 
     channel.stream.listen(
       (message) {
@@ -81,9 +68,12 @@ class _CanvasWidgetState extends State<CanvasWidget> {
             return;
           }
           final action = data['action'] as String;
-          print(action);
+          print('Flutter: Received action $action');
           setState(() {
-            if (action == 'INIT_WIDGETS') {
+            if(action == Constants.connect) {
+              sessionId = data['sessionId'] as String;
+            }
+            if (action == Constants.initialize) {
               widgets = [];
               final jsonData = data['data'] as Map<String, dynamic>?;
               if (jsonData == null || !jsonData.containsKey('root')) {
@@ -145,10 +135,11 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                   'nodeProperty': w['data']['nodeProperty'],
                 });
               }
-              print('Flutter: Initialized widgets from JSON object: $widgets');
+              print('Flutter: Initialized widgets');
 
               emitJson();
-            } else if (action == 'DROP') {
+              // channel.sink.add(jsonEncode({'action': 'SYNC', 'sessionId': sessionId}));
+            } else if (action == Constants.drop) {
               final type = data['type']?.toString().toLowerCase();
               if (type == null) {
                 return;
@@ -192,7 +183,9 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                 final rowSpan = (snappedSize.height / rowHeight).ceil();
                 final colSpan = (snappedSize.width / columnWidth).ceil();
 
-                final parentId = data['parentId']?.toString() ?? findGroupAtPosition(finalPos, id) ?? 'root';
+                final parentId = data['parentId']?.toString() ??
+                    findGroupAtPosition(finalPos, id) ??
+                    'root';
 
                 widgets.add({
                   'id': id,
@@ -210,7 +203,7 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                 });
               }
               emitJson();
-            } else if (action == 'RESIZE') {
+            } else if (action == Constants.resize) {
               final id = data['id']?.toString();
               if (id == null) {
                 return;
@@ -230,7 +223,7 @@ class _CanvasWidgetState extends State<CanvasWidget> {
                 widgets[idx]['colSpan'] = colSpan;
               }
               emitJson();
-            } else if (action == 'MOVE') {
+            } else if (action == Constants.move) {
               final id = data['id']?.toString();
               if (id == null) {
                 return;
@@ -269,9 +262,25 @@ class _CanvasWidgetState extends State<CanvasWidget> {
               }
               final pathParts = path.split('.');
               try {
-                Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']['elementInfo']
-                        [pathParts[0]][int.tryParse(pathParts[1])]
-                    [pathParts[2]] = value;
+                Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']['elementInfo'][pathParts[0]][int.tryParse(pathParts[1])][pathParts[2]] = value;
+                // Sync the update to the corresponding widget in the list
+                final idx = widgets.indexWhere((w) => w['id'] == id);
+                if (idx != -1 && widgets[idx]['nodeProperty'] != null) {
+                  final nodeProperty =
+                      widgets[idx]['nodeProperty'] as Map<String, dynamic>;
+                  if (nodeProperty['elementInfo'] != null) {
+                    final elementInfo =
+                        nodeProperty['elementInfo'] as Map<String, dynamic>;
+                    if (elementInfo[pathParts[0]] != null) {
+                      final array = elementInfo[pathParts[0]] as List<dynamic>;
+                      final index = int.tryParse(pathParts[1]);
+                      if (index != null && index < array.length) {
+                        final item = array[index] as Map<String, dynamic>;
+                        item[pathParts[2]] = value;
+                      }
+                    }
+                  }
+                }
               } catch (e) {
                 print(
                     'Flutter: Error updating node property at path $path: $e');
@@ -287,13 +296,11 @@ class _CanvasWidgetState extends State<CanvasWidget> {
         print('Flutter: WebSocket error: $error');
       },
       onDone: () {
-        print('Flutter: WebSocket closed, attempting to reconnect...');
         Future.delayed(Duration(seconds: 2), () {
           if (!mounted) return;
           setState(() {
             channel = HtmlWebSocketChannel.connect('ws://192.168.2.95:8080');
-            channel.sink
-                .add(jsonEncode({'action': 'CONNECT', 'sessionId': sessionId}));
+            channel.sink.add(jsonEncode({'action': 'CONNECT', 'sessionId': sessionId}));
           });
         });
       },
@@ -313,10 +320,6 @@ class _CanvasWidgetState extends State<CanvasWidget> {
   Offset snapToGrid(Offset pos) {
     return Offset(
       snap(pos.dx),
-/// The grid has a spacing of [gridSize] in both the x and y directions.
-///
-/// This function is used to align widgets with the grid when they are moved or resized.
-///
       snap(pos.dy),
     );
   }
@@ -482,34 +485,34 @@ class _CanvasWidgetState extends State<CanvasWidget> {
         point.dy < groupPos.dy + groupSize.height;
   }
 
-bool isGridInGroup(int dropRow, int dropCol, Map<String, dynamic> group) {
-  final gRow = group['row'] as int? ?? 1;
-  final gCol = group['col'] as int? ?? 1;
-  final gRowSpan = group['rowSpan'] as int? ?? 1;
-  final gColSpan = group['colSpan'] as int? ?? 1;
-  return dropRow >= gRow &&
-         dropRow < gRow + gRowSpan &&
-         dropCol >= gCol &&
-         dropCol < gCol + gColSpan;
-}
-
-String? findGroupAtPosition(Offset pos, String? excludeId) {
-  final dropRow = (pos.dy / rowHeight).floor() + 1;
-  final dropCol = (pos.dx / columnWidth).floor() + 1;
-  final candidates = widgets
-      .where((w) => w['type'] == 'group' && w['id'] != excludeId)
-      .where((group) => isGridInGroup(dropRow, dropCol, group))
-      .toList();
-  if (candidates.isEmpty) {
-    return null;
+  bool isGridInGroup(int dropRow, int dropCol, Map<String, dynamic> group) {
+    final gRow = group['row'] as int? ?? 1;
+    final gCol = group['col'] as int? ?? 1;
+    final gRowSpan = group['rowSpan'] as int? ?? 1;
+    final gColSpan = group['colSpan'] as int? ?? 1;
+    return dropRow >= gRow &&
+        dropRow < gRow + gRowSpan &&
+        dropCol >= gCol &&
+        dropCol < gCol + gColSpan;
   }
-  candidates.sort((a, b) {
-    final areaA = (a['rowSpan'] as int) * (a['colSpan'] as int);
-    final areaB = (b['rowSpan'] as int) * (b['colSpan'] as int);
-    return areaA.compareTo(areaB);  // Smallest span first (innermost)
-  });
-  return candidates.first['id']?.toString();
-}
+
+  String? findGroupAtPosition(Offset pos, String? excludeId) {
+    final dropRow = (pos.dy / rowHeight).floor() + 1;
+    final dropCol = (pos.dx / columnWidth).floor() + 1;
+    final candidates = widgets
+        .where((w) => w['type'] == 'group' && w['id'] != excludeId)
+        .where((group) => isGridInGroup(dropRow, dropCol, group))
+        .toList();
+    if (candidates.isEmpty) {
+      return null;
+    }
+    candidates.sort((a, b) {
+      final areaA = (a['rowSpan'] as int) * (a['colSpan'] as int);
+      final areaB = (b['rowSpan'] as int) * (b['colSpan'] as int);
+      return areaA.compareTo(areaB); // Smallest span first (innermost)
+    });
+    return candidates.first['id']?.toString();
+  }
 
   List<String> _getDescendantIds(String? parentId) {
     if (parentId == null) return [];
@@ -606,6 +609,7 @@ String? findGroupAtPosition(Offset pos, String? excludeId) {
                               }));
                             }
                           });
+                          emitJson();
                         },
                       ),
                     ],
@@ -630,13 +634,9 @@ String? findGroupAtPosition(Offset pos, String? excludeId) {
 
   void _editNode(Map<String, dynamic> widget) {
     final widgetId = widget['id']?.toString();
-    // if (widgetId == null) {
-    //   return;
-    // }
 
     final nodeData = Map<String, dynamic>.from(widget);
     Provider.of<GlobalProvider>(context, listen: false).setCurrentNode(nodeData);
-    print('Flutter: Updated currentNode: ${Provider.of<GlobalProvider>(context, listen: false).currentNode}');
 
     channel.sink.add(jsonEncode({
       'action': 'SET_NODE_PROPERTY',
@@ -658,143 +658,169 @@ String? findGroupAtPosition(Offset pos, String? excludeId) {
   }
 
 // Updated _duplicateWidget method (full method for context)
-void _duplicateWidget(Map<String, dynamic> widget) {
-  final widgetType = widget['type']?.toString().toLowerCase() ?? 'unknown';
-  if (widgetType == 'appbar') {
-    return;
-  }
-  final newId = DateTime.now().millisecondsSinceEpoch.toString();
-  final pos = widget['pos'] as Offset? ?? const Offset(0, 0);
-  Offset newPos = pos + const Offset(20, 20);
-  int offsetCount = 0;
-  while (widgets.any((w) => w['pos'] == newPos && w['id'] != newId)) {
-    offsetCount++;
-    newPos = pos + Offset(offsetCount * gridSize, offsetCount * gridSize);
-  }
-  final snappedPos = snapToGrid(newPos);
-  final newParentId = findGroupAtPosition(snappedPos, newId) ?? 'root';
-  final row = (snappedPos.dy / rowHeight).floor() + 1;
-  final col = (snappedPos.dx / columnWidth).floor() + 1;
-  final rowSpan = (widget['rowSpan'] as int?) ?? ((widget['size'] as Size?)?.height ?? rowHeight / rowHeight).ceil();
-  final colSpan = (widget['colSpan'] as int?) ?? ((widget['size'] as Size?)?.width ?? columnWidth / columnWidth).ceil();
-
-  // NEW: Recursive duplicate for groups (base case: add the widget itself)
-  List<String> newChildIds = [];
-  Map<String, dynamic> newWidget = {
-    'id': newId,
-    'type': widgetType,
-    'pos': snappedPos,
-    'size': widget['size'] as Size? ?? const Size(120, 50),
-    'parentId': newParentId,
-    'name': '${widget['name']?.toString() ?? widgetType}_copy',
-    'label': '${widget['label']?.toString() ?? widgetType}_copy',
-    'row': row,
-    'col': col,
-    'rowSpan': rowSpan,
-    'colSpan': colSpan,
-    'nodeProperty': widget['nodeProperty'],  // Copy properties
-  };
-  setState(() {
-    widgets.add(newWidget);
-  });
-
-  // NEW: If group, recursively duplicate direct children (offset pos, new IDs)
-  if (widgetType == 'group') {
-    final originalChildren = widgets.where((w) => w['parentId'] == widget['id']).toList();
-    for (var child in originalChildren) {
-      final childNewId = DateTime.now().millisecondsSinceEpoch.toString() + '_' + child['id'].toString();
-      final childPos = child['pos'] as Offset? ?? const Offset(0, 0);
-      final childDelta = snappedPos - pos;  // Offset relative to group move
-      final childNewPos = snapToGrid(childPos + childDelta);
-      // Recurse for this child (but stop at groups? No, full recurse via helper)
-      _duplicateChildRecursively(child, childNewId, childNewPos, newId, pos, snappedPos);  // Helper below
-      newChildIds.add(childNewId);
+  void _duplicateWidget(Map<String, dynamic> widget) {
+    final widgetType = widget['type']?.toString().toLowerCase() ?? 'unknown';
+    if (widgetType == 'appbar') {
+      return;
     }
-  }
+    final newId = DateTime.now().millisecondsSinceEpoch.toString();
+    final pos = widget['pos'] as Offset? ?? const Offset(0, 0);
+    Offset newPos = pos + const Offset(20, 20);
+    int offsetCount = 0;
+    while (widgets.any((w) => w['pos'] == newPos && w['id'] != newId)) {
+      offsetCount++;
+      newPos = pos + Offset(offsetCount * gridSize, offsetCount * gridSize);
+    }
+    final snappedPos = snapToGrid(newPos);
+    final newParentId = findGroupAtPosition(snappedPos, newId) ?? 'root';
+    final row = (snappedPos.dy / rowHeight).floor() + 1;
+    final col = (snappedPos.dx / columnWidth).floor() + 1;
+    final rowSpan = (widget['rowSpan'] as int?) ??
+        ((widget['size'] as Size?)?.height ?? rowHeight / rowHeight).ceil();
+    final colSpan = (widget['colSpan'] as int?) ??
+        ((widget['size'] as Size?)?.width ?? columnWidth / columnWidth).ceil();
 
-  // Send DROP for the new widget (children sent in recursion)
-  channel.sink.add(jsonEncode({
-    'action': 'DROP',
-    'id': newId,
-    'type': widgetType,
-    'x': snappedPos.dx,
-    'y': snappedPos.dy,
-    'width': (widget['size'] as Size?)?.width ?? 120.0,
-    'height': (widget['size'] as Size?)?.height ?? 50.0,
-    'parentId': newParentId,
-    'name': newWidget['name'],
-    'label': newWidget['label'],
-    'row': row,
-    'col': col,
-    'rowSpan': rowSpan,
-    'colSpan': colSpan,
-    'sessionId': sessionId,
-  }));
-  emitJson();  // Sync full tree
-}
+    // NEW: Recursive duplicate for groups (base case: add the widget itself)
+    List<String> newChildIds = [];
+    Map<String, dynamic> newWidget = {
+      'id': newId,
+      'type': widgetType,
+      'pos': snappedPos,
+      'size': widget['size'] as Size? ?? const Size(120, 50),
+      'parentId': newParentId,
+      'name': '${widget['name']?.toString() ?? widgetType}_copy',
+      'label': '${widget['label']?.toString() ?? widgetType}_copy',
+      'row': row,
+      'col': col,
+      'rowSpan': rowSpan,
+      'colSpan': colSpan,
+      'nodeProperty': widget['nodeProperty'], // Copy properties
+    };
+    setState(() {
+      widgets.add(newWidget);
+    });
+
+    // NEW: If group, recursively duplicate direct children (offset pos, new IDs)
+    if (widgetType == 'group') {
+      final originalChildren =
+          widgets.where((w) => w['parentId'] == widget['id']).toList();
+      for (var child in originalChildren) {
+        final childNewId = DateTime.now().millisecondsSinceEpoch.toString() +
+            '_' +
+            child['id'].toString();
+        final childPos = child['pos'] as Offset? ?? const Offset(0, 0);
+        final childDelta = snappedPos - pos; // Offset relative to group move
+        final childNewPos = snapToGrid(childPos + childDelta);
+        // Recurse for this child (but stop at groups? No, full recurse via helper)
+        _duplicateChildRecursively(child, childNewId, childNewPos, newId, pos,
+            snappedPos); // Helper below
+        newChildIds.add(childNewId);
+      }
+    }
+
+    // Send DROP for the new widget (children sent in recursion)
+    channel.sink.add(jsonEncode({
+      'action': 'DROP',
+      'id': newId,
+      'type': widgetType,
+      'x': snappedPos.dx,
+      'y': snappedPos.dy,
+      'width': (widget['size'] as Size?)?.width ?? 120.0,
+      'height': (widget['size'] as Size?)?.height ?? 50.0,
+      'parentId': newParentId,
+      'name': newWidget['name'],
+      'label': newWidget['label'],
+      'row': row,
+      'col': col,
+      'rowSpan': rowSpan,
+      'colSpan': colSpan,
+      'sessionId': sessionId,
+    }));
+    emitJson(); // Sync full tree
+  }
 
 // NEW: Helper for recursive child duplication
-void _duplicateChildRecursively(Map<String, dynamic> original, String newId, Offset newPos, String newParentId, Offset originalGroupPos, Offset newGroupPos) {
-  final childType = original['type']?.toString().toLowerCase() ?? 'unknown';
-  final delta = newGroupPos - originalGroupPos;
-  final snappedNewPos = snapToGrid((original['pos'] as Offset?)! + delta);
-  final row = (snappedNewPos.dy / rowHeight).floor() + 1;
-  final col = (snappedNewPos.dx / columnWidth).floor() + 1;
-  final rowSpan = (original['rowSpan'] as int?) ?? 1;
-  final colSpan = (original['colSpan'] as int?) ?? 1;
+  void _duplicateChildRecursively(
+      Map<String, dynamic> original,
+      String newId,
+      Offset newPos,
+      String newParentId,
+      Offset originalGroupPos,
+      Offset newGroupPos) {
+    final childType = original['type']?.toString().toLowerCase() ?? 'unknown';
+    final delta = newGroupPos - originalGroupPos;
+    final snappedNewPos = snapToGrid((original['pos'] as Offset?)! + delta);
+    final row = (snappedNewPos.dy / rowHeight).floor() + 1;
+    final col = (snappedNewPos.dx / columnWidth).floor() + 1;
+    final rowSpan = (original['rowSpan'] as int?) ?? 1;
+    final colSpan = (original['colSpan'] as int?) ?? 1;
 
-  final newChild = {
-    'id': newId,
-    'type': childType,
-    'pos': snappedNewPos,
-    'size': original['size'] as Size? ?? const Size(120, 50),
-    'parentId': newParentId,
-    'name': '${original['name']?.toString() ?? childType}_copy',
-    'label': '${original['label']?.toString() ?? childType}_copy',
-    'row': row,
-    'col': col,
-    'rowSpan': rowSpan,
-    'colSpan': colSpan,
-    'nodeProperty': original['nodeProperty'],
-  };
+    final newChild = {
+      'id': newId,
+      'type': childType,
+      'pos': snappedNewPos,
+      'size': original['size'] as Size? ?? const Size(120, 50),
+      'parentId': newParentId,
+      'name': '${original['name']?.toString() ?? childType}_copy',
+      'label': '${original['label']?.toString() ?? childType}_copy',
+      'row': row,
+      'col': col,
+      'rowSpan': rowSpan,
+      'colSpan': colSpan,
+      'nodeProperty': original['nodeProperty'],
+    };
 
-  setState(() {
-    widgets.add(newChild);
-  });
+    setState(() {
+      widgets.add(newChild);
+    });
 
-  // Recurse for this child's children
-  final grandChildren = widgets.where((w) => w['parentId'] == original['id']).toList();
-  for (var grand in grandChildren) {
-    final grandNewId = DateTime.now().millisecondsSinceEpoch.toString() + '_' + grand['id'].toString();
-    final grandDelta = newPos - (original['pos'] as Offset? ?? Offset.zero);  // Relative to parent
-    _duplicateChildRecursively(grand, grandNewId, (grand['pos'] as Offset?)! + grandDelta, newId, Offset.zero, Offset.zero);
+    // Recurse for this child's children
+    final grandChildren =
+        widgets.where((w) => w['parentId'] == original['id']).toList();
+    for (var grand in grandChildren) {
+      final grandNewId = DateTime.now().millisecondsSinceEpoch.toString() +
+          '_' +
+          grand['id'].toString();
+      final grandDelta = newPos -
+          (original['pos'] as Offset? ?? Offset.zero); // Relative to parent
+      _duplicateChildRecursively(
+          grand,
+          grandNewId,
+          (grand['pos'] as Offset?)! + grandDelta,
+          newId,
+          Offset.zero,
+          Offset.zero);
+    }
+
+    // Send DROP for this child
+    channel.sink.add(jsonEncode({
+      'action': 'DROP',
+      'id': newId,
+      'type': childType,
+      'x': snappedNewPos.dx,
+      'y': snappedNewPos.dy,
+      'width': newChild['size'].width,
+      'height': newChild['size'].height,
+      'parentId': newParentId,
+      'name': newChild['name'],
+      'label': newChild['label'],
+      'row': row,
+      'col': col,
+      'rowSpan': rowSpan,
+      'colSpan': colSpan,
+      'sessionId': sessionId,
+    }));
   }
-
-  // Send DROP for this child
-  channel.sink.add(jsonEncode({
-    'action': 'DROP',
-    'id': newId,
-    'type': childType,
-    'x': snappedNewPos.dx,
-    'y': snappedNewPos.dy,
-    'width': newChild['size'].width,
-    'height': newChild['size'].height,
-    'parentId': newParentId,
-    'name': newChild['name'],
-    'label': newChild['label'],
-    'row': row,
-    'col': col,
-    'rowSpan': rowSpan,
-    'colSpan': colSpan,
-    'sessionId': sessionId,
-  }));
-}
 
   Widget interactiveWrapper(Map<String, dynamic> w, Widget child) {
     final id = w['id']?.toString();
     if (id == null) {
       return const SizedBox.shrink();
     }
+
+    final type = w['type']?.toString().toLowerCase() ?? '';
+    final fixedTypes = ['floatingactionbutton', 'radio', 'checkbox', 'switch', 'avatar', 'icon'];
+    final allowResize = !fixedTypes.contains(type);
 
     return Positioned(
       left: (w['pos'] as Offset?)?.dx ?? 0.0,
@@ -807,6 +833,7 @@ void _duplicateChildRecursively(Map<String, dynamic> original, String newId, Off
         child: ResizableWidget(
           size: w['size'] as Size? ?? const Size(120, 50),
           pos: w['pos'] as Offset? ?? const Offset(0, 0),
+          allowResize: allowResize,
           onResize: (newSize) {
             final snapped = snapSize(newSize);
             final rowSpan = (snapped.height / rowHeight).ceil();
@@ -915,1719 +942,10 @@ void _duplicateChildRecursively(Map<String, dynamic> original, String newId, Off
     );
   }
 
-  Widget buildWidget(Map<String, dynamic> w, bool isEdit) {
-    final size = w['size'] as Size? ?? const Size(120, 50);
-    final type = w['type']?.toString().toLowerCase() ?? 'unknown';
-    Widget base;
-
- switch (type) {
-      case 'appbar':
-        base = PreferredSize(
-          preferredSize: Size(size.width, size.height),
-          child: AppBar(
-            title: Text(w['label']?.toString() ?? 'AppBar'),
-            automaticallyImplyLeading: false,
-          ),
-        );
-        break;
-      case 'floatingactionbutton':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: FloatingActionButton(
-            onPressed: () {},
-            tooltip: 'Save',
-            child: const Icon(Icons.save),
-          ),
-        );
-        break;
-      case 'button':
-        base = SizedBox(
-            width: size.width,
-            height: size.height,
-          child: TorusButton(
-            text: w['label']?.toString() ?? 'Click Me',
-            varient: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'secondary';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'variant',
-                orElse: () => null,
-              );
-              return variantProp?['value']?.toString() ?? 'secondary';
-            }(),
-          ),
-        );
-        break;
-      case 'textinput':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TTextField(
-              type : () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'outlined-circle';
-              }
-              final typeProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'type',
-                orElse: () => null,
-              );
-              return typeProp?['value'] ?? 'outlined-circle';
-            }(),
-              hintText :  w['label'] ?? 'Enter here' ,
-              isDisabled : () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final isDisabledProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isDisabled',
-                orElse: () => null,
-              );
-              return isDisabledProp?['value'] ?? 'false';
-            }() ,
-              keyboardType: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return TextInputType.name; 
-  }
-
-  final keyboardTypeProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'keyboardType',
-    orElse: () => null,
-  );
-  final keyboardTypeValue = keyboardTypeProp?['value']?.toString();
-  switch (keyboardTypeValue) {
-    case 'text':
-      return TextInputType.text;
-    case 'number':
-      return TextInputType.number;
-    case 'email':
-      return TextInputType.emailAddress;
-    case 'phone':
-      return TextInputType.phone;
-    case 'url':
-      return TextInputType.url;
-    case 'multiline':
-      return TextInputType.multiline;
-    default:
-      return TextInputType.name;
-  }
-}(),
-              textAlign: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return TextAlign.start; // Default textAlign
-  }
-
-  final textAlignProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'textAlign',
-    orElse: () => null,
-  );
-
-  final textAlignValue = textAlignProp?['value']?.toString();
-  switch (textAlignValue) {
-    case 'start':
-      return TextAlign.start;
-    case 'end':
-      return TextAlign.end;
-    case 'left':
-      return TextAlign.left;
-    case 'right':
-      return TextAlign.right;
-    case 'center':
-      return TextAlign.center;
-    case 'justify':
-      return TextAlign.justify;
-    default:
-      return TextAlign.start; // Default textAlign
-  }
-}(),
-              textAlignVertical: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return TextAlignVertical.center; // Default textAlignVertical
-  }
-
-  final textAlignVerticalProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'textAlignVertical',
-    orElse: () => null,
-  );
-
-  final textAlignVerticalValue = textAlignVerticalProp?['value']?.toString();
-  switch (textAlignVerticalValue) {
-    case 'top':
-      return TextAlignVertical.top;
-    case 'center':
-      return TextAlignVertical.center;
-    case 'bottom':
-      return TextAlignVertical.bottom;
-    default:
-      return TextAlignVertical.center; // Default textAlignVertical
-  }
-}(),
-              showCursor: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final showCursorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'showCursor',
-                orElse: () => null,
-              );
-              return showCursorProp?['value'] ?? 'false';
-            }() ,
-              helperText: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final helperTextProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'helperText',
-                orElse: () => null,
-              );
-              return helperTextProp?['value'] ?? '';
-            }() ,
-              prefix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'prefix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); // Convert string to Text widget
-  }
-  return null; 
-}(),
-              suffix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final suffixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'suffix',
-    orElse: () => null,
-  );
-  final suffixValue = suffixProp?['value']?.toString();
-  if (suffixValue != null && suffixValue.isNotEmpty) {
-    return Text(suffixValue); 
-  }
-  return null; 
-}(),
-              needClear: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final needClearProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'needClear',
-                orElse: () => null,
-              );
-              return needClearProp?['value'] ?? 'false';
-            }()  ,
-              label: w['label'] ?? 'Enter here' ,
-              isFloatLabel: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'true';
-              }
-              final isFloatLabelProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isFloatLabel',
-                orElse: () => null,
-              );
-              return isFloatLabelProp?['value'] ?? 'true';
-            }() ,
-              fillColor: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'greyShade'; // Default fillColor
-  }
-
-  final fillColorProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'fillColor',
-    orElse: () => null,
-  );
-
-  final fillColorValue = fillColorProp?['value']?.toString();
-  return fillColorValue ?? 'greyShade';
-}(),
-              animationConfig: [],
-              floatingLabelPosition: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-
-  final floatingLabelProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'floatingLabelPosition',
-    orElse: () => null,
-  );
-
-  final floatingLabelValue = floatingLabelProp?['value']?.toString();
-  switch (floatingLabelValue) {
-    case 'start':
-      return MainAxisAlignment.start;
-    case 'end':
-      return MainAxisAlignment.end;
-    case 'center':
-      return MainAxisAlignment.center;
-    case 'spaceBetween':
-      return MainAxisAlignment.spaceBetween;
-    case 'spaceAround':
-      return MainAxisAlignment.spaceAround;
-    case 'spaceEvenly':
-      return MainAxisAlignment.spaceEvenly;
-    default:
-      return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-}(),
-          ),
-        );
-        break;
-      case 'group':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: Container(
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey, width: 2.0),
-              color: Colors.grey.withOpacity(0.1),
-            ),
-            child: Center(
-                child: Text(w['label']?.toString() ?? 'group',
-                    style: const TextStyle(fontSize: 16))),
-          ),
-        );
-        break;
-      case 'dropdown':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TDropdown(
-            type: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'outlined-circle';
-              }
-              final typeProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'type',
-                orElse: () => null,
-              );
-              return typeProp?['value'] ?? 'outlined-circle';
-            }(),
-            hintText : w['label'] ?? 'Select here' ,  
-            isDisabled : () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final isDisabledProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isDisabled',
-                orElse: () => null,
-              );
-              return isDisabledProp?['value'] ?? 'false';
-            }() ,  
-            label: w['label'] ?? 'Enter here' ,
-            items: [],
-            selectedItem:   () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final selectedItemProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'selectedItem',
-                orElse: () => null,
-              );
-              return selectedItemProp?['value'] ?? '';
-            }() ,
-            helperText: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final helperTextProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'helperText',
-                orElse: () => null,
-              );
-              return helperTextProp?['value'] ?? '';
-            }() ,
-            category: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final categoryProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'category',
-                orElse: () => null,
-              );
-              return categoryProp?['value'] ?? '';
-            }() ,
-            fillColor: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'greyShade'; // Default fillColor
-  }
-
-  final fillColorProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'fillColor',
-    orElse: () => null,
-  );
-
-  final fillColorValue = fillColorProp?['value']?.toString();
-  return fillColorValue ?? 'greyShade';
-}(),
-            isFloatLabel:() {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'true';
-              }
-              final isFloatLabelProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isFloatLabel',
-                orElse: () => null,
-              );
-              return isFloatLabelProp?['value'] ?? 'true';
-            }()  ,
-            prefix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'prefix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); // Convert string to Text widget
-  }
-  return null; 
-}(),
-            suffix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'suffix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); 
-  }
-  return null; 
-}(),
-            floatingLabelPosition: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-
-  final floatingLabelProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'floatingLabelPosition',
-    orElse: () => null,
-  );
-
-  final floatingLabelValue = floatingLabelProp?['value']?.toString();
-  switch (floatingLabelValue) {
-    case 'start':
-      return MainAxisAlignment.start;
-    case 'end':
-      return MainAxisAlignment.end;
-    case 'center':
-      return MainAxisAlignment.center;
-    case 'spaceBetween':
-      return MainAxisAlignment.spaceBetween;
-    case 'spaceAround':
-      return MainAxisAlignment.spaceAround;
-    case 'spaceEvenly':
-      return MainAxisAlignment.spaceEvenly;
-    default:
-      return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-}(),
-            animationConfig: [],
-
-          ),
-        );
-        break;
-      case 'textarea':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TTextArea(
-              type :  () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'outlined-circle';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'type',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'outlined-circle';
-            }(),
-              hintText :  w['label']?.toString() ?? 'Enter here...' ,
-              isDisabled : () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isDisabled',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }() ,
-              textAlign: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return TextAlign.start; // Default textAlign
-  }
-
-  final textAlignProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'textAlign',
-    orElse: () => null,
-  );
-
-  final textAlignValue = textAlignProp?['value']?.toString();
-  switch (textAlignValue) {
-    case 'start':
-      return TextAlign.start;
-    case 'end':
-      return TextAlign.end;
-    case 'left':
-      return TextAlign.left;
-    case 'right':
-      return TextAlign.right;
-    case 'center':
-      return TextAlign.center;
-    case 'justify':
-      return TextAlign.justify;
-    default:
-      return TextAlign.start; // Default textAlign
-  }
-}(),
-              textAlignVertical: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return TextAlignVertical.center; // Default textAlignVertical
-  }
-
-  final textAlignVerticalProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'textAlignVertical',
-    orElse: () => null,
-  );
-
-  final textAlignVerticalValue = textAlignVerticalProp?['value']?.toString();
-  switch (textAlignVerticalValue) {
-    case 'top':
-      return TextAlignVertical.top;
-    case 'center':
-      return TextAlignVertical.center;
-    case 'bottom':
-      return TextAlignVertical.bottom;
-    default:
-      return TextAlignVertical.center; // Default textAlignVertical
-  }
-}(),
-              showCursor: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'showCursor',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }() ,       
-              helperText: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'helperText',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? '';
-            }() ,
-              prefix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'prefix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); 
-  }
-  return null; 
-}(),
-              suffix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'suffix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); 
-  }
-  return null; 
-}(),
-              needClear: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'needClear',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }()  ,
-              label: w['label'] ?? 'Enter here' ,
-              maxlines: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 3;
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'maxlines',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 5;
-            }() , 
-              keyboardType: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return TextInputType.name; 
-  }
-
-  final keyboardTypeProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'keyboardType',
-    orElse: () => null,
-  );
-  final keyboardTypeValue = keyboardTypeProp?['value']?.toString();
-  switch (keyboardTypeValue) {
-    case 'text':
-      return TextInputType.text;
-    case 'number':
-      return TextInputType.number;
-    case 'email':
-      return TextInputType.emailAddress;
-    case 'phone':
-      return TextInputType.phone;
-    case 'url':
-      return TextInputType.url;
-    case 'multiline':
-      return TextInputType.multiline;
-    default:
-      return TextInputType.name;
-  }
-}(),
-              fillColor: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'greyShade'; // Default fillColor
-  }
-
-  final fillColorProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'fillColor',
-    orElse: () => null,
-  );
-
-  final fillColorValue = fillColorProp?['value']?.toString();
-  return fillColorValue ?? 'greyShade';
-}(),
-              isFloatLabel:() {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'true';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isFloatLabel',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'true';
-            }()  ,
-              floatingLabelPosition: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-
-  final floatingLabelProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'floatingLabelPosition',
-    orElse: () => null,
-  );
-
-  final floatingLabelValue = floatingLabelProp?['value']?.toString();
-  switch (floatingLabelValue) {
-    case 'start':
-      return MainAxisAlignment.start;
-    case 'end':
-      return MainAxisAlignment.end;
-    case 'center':
-      return MainAxisAlignment.center;
-    case 'spaceBetween':
-      return MainAxisAlignment.spaceBetween;
-    case 'spaceAround':
-      return MainAxisAlignment.spaceAround;
-    case 'spaceEvenly':
-      return MainAxisAlignment.spaceEvenly;
-    default:
-      return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-}(),
-              animationConfig: [],
-
-          ),
-        );
-        break;
-      case 'timepicker':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TTimePicker(
-             type :  () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'outlined-circle';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'type',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'outlined-circle';
-            }(),
-             label: w['label'] ?? 'Enter here' ,
-             hintText : w['label'] ?? 'Select here' ,  
-             isDisabled : () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isDisabled',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }() ,
-            //  timeFormat: ,
-             helperText: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'helperText',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? '';
-            }() ,
-            //  timeFormat: ,
-             fillColor: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'greyShade'; 
-  }
-
-  final fillColorProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'fillColor',
-    orElse: () => null,
-  );
-
-  final fillColorValue = fillColorProp?['value']?.toString();
-  return fillColorValue ?? 'greyShade';
-}(),
-             needClear:() {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'needClear',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }()  ,
-             prefix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'prefix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); // Convert string to Text widget
-  }
-  return null; 
-}(),
-            suffix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'suffix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); 
-  }
-  return null; 
-}(),
-            isFloatLabel:() {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'true';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isFloatLabel',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'true';
-            }()  ,
-            floatingLabelPosition: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-
-  final floatingLabelProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'floatingLabelPosition',
-    orElse: () => null,
-  );
-
-  final floatingLabelValue = floatingLabelProp?['value']?.toString();
-  switch (floatingLabelValue) {
-    case 'start':
-      return MainAxisAlignment.start;
-    case 'end':
-      return MainAxisAlignment.end;
-    case 'center':
-      return MainAxisAlignment.center;
-    case 'spaceBetween':
-      return MainAxisAlignment.spaceBetween;
-    case 'spaceAround':
-      return MainAxisAlignment.spaceAround;
-    case 'spaceEvenly':
-      return MainAxisAlignment.spaceEvenly;
-    default:
-      return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-}(),
-            animationConfig: [],
-          ),
-        );
-        break;
-      case 'radio':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TRadio(),
-        );
-        break;
-      case 'datepicker':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TDatePicker(
-              type : () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'outlined-circle';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'type',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'outlined-circle';
-            }(),
-              hintText :  w['label'] ?? 'Select date' ,
-              isDisabled : () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isDisabled',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }() ,
-              helperText: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'helperText',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? '';
-            }() ,
-              // selectedDate: ,
-              // dateFormat: ,
-              label: w['label'] ?? 'Enter here' ,
-              needClear: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'needClear',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }()  ,
-              prefix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'prefix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); // Convert string to Text widget
-  }
-  return null; 
-}(),
-              suffix: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; // Default to null for Widget?
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'suffix',
-    orElse: () => null,
-  );
-  final prefixValue = prefixProp?['value']?.toString();
-  if (prefixValue != null && prefixValue.isNotEmpty) {
-    return Text(prefixValue); 
-  }
-  return null; 
-}(),
-              fillColor: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'greyShade'; // Default fillColor
-  }
-
-  final fillColorProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'fillColor',
-    orElse: () => null,
-  );
-
-  final fillColorValue = fillColorProp?['value']?.toString();
-  return fillColorValue ?? 'greyShade';
-}(),
-              isFloatLabel:() {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'true';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isFloatLabel',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'true';
-            }()  ,
-              floatingLabelPosition: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-
-  final floatingLabelProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'floatingLabelPosition',
-    orElse: () => null,
-  );
-
-  final floatingLabelValue = floatingLabelProp?['value']?.toString();
-  switch (floatingLabelValue) {
-    case 'start':
-      return MainAxisAlignment.start;
-    case 'end':
-      return MainAxisAlignment.end;
-    case 'center':
-      return MainAxisAlignment.center;
-    case 'spaceBetween':
-      return MainAxisAlignment.spaceBetween;
-    case 'spaceAround':
-      return MainAxisAlignment.spaceAround;
-    case 'spaceEvenly':
-      return MainAxisAlignment.spaceEvenly;
-    default:
-      return MainAxisAlignment.start; // Default floatingLabelPosition
-  }
-}(),
-              // allowFutureDates: ,
-              // allowPastDates: ,
-              animationConfig: [],
-
-
-          ),
-        );
-        break;
-      case 'checkbox':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TCheckbox(
-            value: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'value',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }() ,
-            isDisabled: ()  {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isDisabled',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'false';
-            }()   ,
-            contentPosition: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'right'; // Default contentPosition
-  }
-
-  final contentPositionProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'contentPosition',
-    orElse: () => null,
-  );
-
-  final contentPositionValue = contentPositionProp?['value']?.toString();
-  return contentPositionValue ?? 'right'; // Return string or default
-}(),
-            checkboxShape: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'squared'; // Default checkboxShape
-  }
-
-  final checkboxShapeProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'checkboxShape',
-    orElse: () => null,
-  );
-
-  final checkboxShapeValue = checkboxShapeProp?['value']?.toString();
-  return checkboxShapeValue ?? 'squared'; // Return string or default
-}(),
-            animationConfig: [],
-          ),
-        );
-        break;
-      case 'slider':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TSlider(value: 0, onChanged: (value) {},
-            size: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'medium';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'size',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? 'medium';
-            }() ,
-            min: 10 ,
-            max: 100,
-            divisions: 10 ,
-            label: w['label'] ?? 'Enter here' ,
-            labelPosition: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'right'; // Default contentPosition
-  }
-
-  final contentPositionProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'contentPosition',
-    orElse: () => null,
-  );
-
-  final contentPositionValue = contentPositionProp?['value']?.toString();
-  return contentPositionValue ?? 'right'; // Return string or default
-}() ,
-          ),
-        );
-        break;
-      case 'switch':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TSwitch(
-            value: () { 
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final valueProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'value',
-                orElse: () => null,
-              );
-              return valueProp?['value'] ?? 'false';
-            }()  ,
-            label: w['label'] ?? 'Enter here' ,
-            isDisabled: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'false';
-              }
-              final isDisabledProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'isDisabled',
-                orElse: () => null,
-              );
-              return isDisabledProp?['value'] ?? 'false';
-            }(),
-            leftContent: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'leftContent',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? '';
-            }() ,
-            rightContent:  () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final variantProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'rightContent',
-                orElse: () => null,
-              );
-              return variantProp?['value'] ?? '';
-            }(),
-
-          ),
-        );
-        break;
-      case 'avatar':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TAvatar(
-            text: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return ''; 
-  }
-
-  final textProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'text',
-    orElse: () => null,
-  );
-
-  final textValue = textProp?['value'];
-  return textValue ?? '';
-}(),
-            size: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'small'; 
-  }
-
-  final sizeProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'size',
-    orElse: () => null,
-  );
-
-  final sizeValue = sizeProp?['value'];
-  return sizeValue ?? 'small';
-}(),
-            imageUrl:  () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return ''; 
-  }
-
-  final iconProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'imageUrl',
-    orElse: () => null,
-  );
-
-  final iconValue = iconProp?['value'];
-  return iconValue ?? '';
-}() ,
-            icon: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return ''; 
-  }
-
-  final iconProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'icon',
-    orElse: () => null,
-  );
-
-  final iconValue = iconProp?['value'];
-  return iconValue ?? '';
-}()  ,
-            foregroundColor : () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'greyShade'; // Default fillColor
-  }
-
-  final foregroundColorProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'foregroundColor',
-    orElse: () => null,
-  );
-
-  final foregroundColorValue = foregroundColorProp?['value'];
-  return foregroundColorValue ?? 'greyShade';
-}(),
-            backgroundColor : () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return 'greyShade'; // Default fillColor
-  }
-
-  final backgroundColorProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'backgroundColor',
-    orElse: () => null,
-  );
-
-  final backgroundColorValue = backgroundColorProp?['value'];
-  return backgroundColorValue ?? 'greyShade';
-}(), 
-            animationConfig: [],
-          ),
-        );
-        break;
-      case 'chip':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TChip(
-            type: () {
-        final provider = Provider.of<GlobalProvider>(context, listen: false);
-        final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-        
-        if (props == null || props.isEmpty) {
-          return 'capsule';
-        }
-
-        final typeProp = props.firstWhere(
-          (prop) => prop is Map && prop['name'] == 'type',
-          orElse: () => null,
-        );
-
-        final typeValue = typeProp?['value'];
-        switch (typeValue) {
-          case 'capsule':
-          case 'rectangle':
-          case 'rounded':
-            return typeValue;
-          default:
-            return 'capsule';
-        }
-      }(),
-            icon: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  if (props == null || props.isEmpty) {
-    return null; 
-  }
-  final prefixProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'icon',
-    orElse: () => null,
-  );
-  final iconValue = prefixProp?['value']?.toString();
-   return null; 
-}() ,
-            label: w['label'] ?? 'Enter here' ,
-            backgroundcolor: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'secondary';
-              }
-              final foregroundcolorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'backgroundcolor',
-                orElse: () => null,
-              );
-              return foregroundcolorProp?['value']?.toString() ?? 'secondary';
-            }(),
-            foregroundcolor:  () {
-            final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'secondary';
-              }
-              final foregroundcolorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'variant',
-                orElse: () => null,
-              );
-              return foregroundcolorProp?['value']?.toString() ?? 'secondary';
-            }(),
-            animationConfig: [],
-          ),
-        );
-        break;
-      case 'image':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TImage(
-            
-            imageUrl : (Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']
-                              ?['elementInfo']?['props'] as List)[1]['value']
-                          ?.toString() ??
-                      'https://images.squarespace-cdn.com/content/v1/60f1a490a90ed8713c41c36c/1629223610791-LCBJG5451DRKX4WOB4SP/37-design-powers-url-structure.jpeg?format=2500w',
-            size: (Provider.of<GlobalProvider>(context, listen: false).currentNode['nodeProperty']
-                              ?['elementInfo']?['props'] as List)[1]['value']
-                          ?.toString() ?? 'medium',          
-          ),
-        );
-        break;
-      case 'text':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TextWidget(
-            text: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final isDisabledProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'text',
-                orElse: () => null,
-              );
-              return isDisabledProp?['value'] ?? '';
-            }()  ,    
-            textTheme: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'labelMedium';
-              }
-              final textThemeProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'textTheme',
-                orElse: () => null,
-              );
-              return textThemeProp?['value']?.toString() ?? 'labelMedium';
-            }(), 
-            textOverflow:  () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'fade';
-              }
-              final textOverflowProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'textOverflow',
-                orElse: () => null,
-              );
-              return textOverflowProp?['value'] ?? 'fade';
-            }(), 
-            textAlign: () {
-  final provider = Provider.of<GlobalProvider>(context, listen: false);
-  final props = provider.currentNode['nodeProperty']?['elementInfo']?['props'] as List?;
-  
-  if (props == null || props.isEmpty) {
-    return TextAlign.start; // Default textAlign
-  }
-
-  final textAlignProp = props.firstWhere(
-    (prop) => prop is Map && prop['name'] == 'textAlign',
-    orElse: () => null,
-  );
-
-  final textAlignValue = textAlignProp?['value']?.toString();
-  switch (textAlignValue) {
-    case 'start':
-      return TextAlign.start;
-    case 'end':
-      return TextAlign.end;
-    case 'left':
-      return TextAlign.left;
-    case 'right':
-      return TextAlign.right;
-    case 'center':
-      return TextAlign.center;
-    case 'justify':
-      return TextAlign.justify;
-    default:
-      return TextAlign.start; // Default textAlign
-  }
-}(),
-            fontWeight: () {
-              final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'w100';
-              }
-              final fontWeightProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'fontWeight',
-                orElse: () => null,
-              );
-              return fontWeightProp?['value'] ?? 'w100';
-            }(),
-            foregroundColor: () {
-            final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'secondary';
-              }
-              final foregroundcolorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'foregroundColor',
-                orElse: () => null,
-              );
-              return foregroundcolorProp?['value']?.toString() ?? 'secondary';
-            }(),
-                          ),
-        );
-        break;
-      case 'icon':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TIcon(
-            icon:  () {
-            final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return '';
-              }
-              final colorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'icon',
-                orElse: () => null,
-              );
-              return colorProp?['value'] ?? '';
-            }() ,
-            size: () {
-            final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'medium';
-              }
-              final colorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'size',
-                orElse: () => null,
-              );
-              return colorProp?['value'] ?? 'medium';
-            }() ,
-            color:  () {
-            final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'secondary';
-              }
-              final colorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'color',
-                orElse: () => null,
-              );
-              return colorProp?['value'] ?? 'secondary';
-            }() ,
-            animationConfig: [],
-          ),
-         
-        );
-        break;
-      case 'progressbar':
-        base = SizedBox(
-          width: size.width,
-          height: size.height,
-          child: TProgressbar(
-           type: () { 
-           final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'linear';
-              }
-              final isDisabledProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'type',
-                orElse: () => null,
-              );
-              return isDisabledProp?['value'] ?? 'linear';
-            }(),
-           color: () {
-            final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'secondary';
-              }
-              final colorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'color',
-                orElse: () => null,
-              );
-              return colorProp?['value'] ?? 'secondary';
-            }(),
-           backgroundColor: () {
-            final provider =
-                  Provider.of<GlobalProvider>(context, listen: false);
-              final props = provider.currentNode['nodeProperty']?['elementInfo']
-                  ?['props'] as List?;
-              if (props == null || props.isEmpty) {
-                return 'secondary';
-              }
-              final backgroundColorProp = props.firstWhere(
-                (prop) => prop is Map && prop['name'] == 'backgroundColor',
-                orElse: () => null,
-              );
-              return backgroundColorProp?['value'] ?? 'secondary';
-            }(),
-           animationConfig: [],
-
-
-          ),
-        );
-        break;
-      default:
-        base = const SizedBox.shrink();
-    }
-
-    if (type == 'appbar') {
-      return Positioned(
-        left: 0,
-        top: 0,
-        child: base,
-      );
-    }
-
-    return interactiveWrapper(w, base);
-  }
-
   @override
   Widget build(BuildContext context) {
+    const double canvasWidth = 400;
+    const double canvasHeight = 651;
     final screenSize = MediaQuery.of(context).size;
     final appBarWidget = widgets.firstWhere(
       (w) => w['type']?.toString() == 'appbar',
@@ -2638,6 +956,7 @@ void _duplicateChildRecursively(Map<String, dynamic> original, String newId, Off
 
     return Scaffold(
       appBar: appBarWidget.isNotEmpty ? buildAppBarWidget(appBarWidget) : null,
+      // appBar: AppBar(title: Text('Flutter Editor'), automaticallyImplyLeading: false),
       body: Container(
         color: Colors.white,
         width: screenSize.width,
@@ -2645,10 +964,11 @@ void _duplicateChildRecursively(Map<String, dynamic> original, String newId, Off
         child: Stack(
           children: [
             CustomPaint(
-              size: Size(screenSize.width, screenSize.height),
+              size: Size(canvasWidth, canvasHeight),
               painter: GridPainter(gridSize: gridSize),
             ),
-            for (var w in otherWidgets) buildWidget(w, false),
+            for (var w in otherWidgets) 
+              interactiveWrapper(w, buildBaseWidget(context, w, false)),
           ],
         ),
       ),
@@ -2691,6 +1011,7 @@ class ResizableWidget extends StatefulWidget {
   final Offset pos;
   final Function(Size) onResize;
   final Function(Offset) onMove;
+  final bool allowResize;
   final bool dev;
 
   const ResizableWidget({
@@ -2700,14 +1021,15 @@ class ResizableWidget extends StatefulWidget {
     required this.pos,
     required this.onResize,
     required this.onMove,
+    this.allowResize = true,
     this.dev = true,
   });
 
   @override
   State<ResizableWidget> createState() => _ResizableWidgetState();
 }
- 
- class _ResizableWidgetState extends State<ResizableWidget> {
+
+class _ResizableWidgetState extends State<ResizableWidget> {
   late double width;
   late double height;
   late Offset pos;
@@ -2722,7 +1044,6 @@ class ResizableWidget extends StatefulWidget {
     width = widget.size.width;
     height = widget.size.height;
     pos = widget.pos;
-    print('Flutter: Initialized ResizableWidget at $pos with size $width x $height');
   }
 
   @override
@@ -2732,13 +1053,11 @@ class ResizableWidget extends StatefulWidget {
       setState(() {
         width = widget.size.width;
         height = widget.size.height;
-        print('Flutter: Updated ResizableWidget size to $width x $height');
       });
     }
     if (oldWidget.pos != widget.pos) {
       setState(() {
         pos = widget.pos;
-        print('Flutter: Updated ResizableWidget pos to $pos');
       });
     }
   }
@@ -2790,7 +1109,6 @@ class ResizableWidget extends StatefulWidget {
             setState(() {
               _isResizing = true;
               _activeHandle = position;
-              print('Flutter: Started resizing at $position');
             });
           },
           onPanUpdate: onPanUpdate,
@@ -2798,7 +1116,6 @@ class ResizableWidget extends StatefulWidget {
             setState(() {
               _isResizing = false;
               _activeHandle = null;
-              print('Flutter: Ended resizing, new size: $width x $height');
             });
             widget.onResize(Size(width, height));
             widget.onMove(pos);
@@ -2833,13 +1150,11 @@ class ResizableWidget extends StatefulWidget {
       onEnter: (_) {
         setState(() {
           _isHovered = true;
-          print('Flutter: Hovered over ResizableWidget');
         });
       },
       onExit: (_) {
         setState(() {
           _isHovered = false;
-          print('Flutter: Exited ResizableWidget');
         });
       },
       child: GestureDetector(
@@ -2847,14 +1162,12 @@ class ResizableWidget extends StatefulWidget {
         onPanStart: (_) {
           if (!_isResizing) {
             setState(() => _isDragging = true);
-            print('Flutter: Started dragging');
           }
         },
         onPanUpdate: (details) {
           if (_isDragging && !_isResizing) {
             setState(() {
               pos += details.delta;
-              print('Flutter: Dragging to $pos');
             });
             widget.onMove(pos);
           }
@@ -2862,14 +1175,15 @@ class ResizableWidget extends StatefulWidget {
         onPanEnd: (_) {
           if (_isDragging && !_isResizing) {
             setState(() => _isDragging = false);
-            print('Flutter: Ended dragging at $pos');
             widget.onMove(pos);
           }
         },
         child: Container(
           decoration: BoxDecoration(
             border: Border.all(
-              color: _isResizing || _isDragging ? Colors.blue : Colors.grey.shade200,
+              color: _isResizing || _isDragging
+                  ? Colors.blue
+                  : Colors.grey.shade200,
               width: _isResizing || _isDragging ? 1.0 : 0.5,
             ),
           ),
@@ -2883,45 +1197,51 @@ class ResizableWidget extends StatefulWidget {
                   child: widget.child,
                 ),
               ),
-              if (_isHovered || _isResizing || _isDragging) ...[
-                _buildHandle(
-                  position: 'top',
-                  onPanUpdate: (details) {
-                    setState(() {
-                      double newHeight = (height - details.delta.dy).clamp(20.0, double.infinity);
-                      double deltaY = height - newHeight;
-                      pos = Offset(pos.dx, pos.dy + deltaY);
-                      height = newHeight;
-                    });
-                  },
-                ),
-                _buildHandle(
-                  position: 'bottom',
-                  onPanUpdate: (details) {
-                    setState(() {
-                      height = (height + details.delta.dy).clamp(20.0, double.infinity);
-                    });
-                  },
-                ),
-                _buildHandle(
-                  position: 'left',
-                  onPanUpdate: (details) {
-                    setState(() {
-                      double newWidth = (width - details.delta.dx).clamp(20.0, double.infinity);
-                      double deltaX = width - newWidth;
-                      pos = Offset(pos.dx + deltaX, pos.dy);
-                      width = newWidth;
-                    });
-                  },
-                ),
-                _buildHandle(
-                  position: 'right',
-                  onPanUpdate: (details) {
-                    setState(() {
-                      width = (width + details.delta.dx).clamp(20.0, double.infinity);
-                    });
-                  },
-                ),
+              if ((widget.allowResize ? (_isHovered || _isResizing || _isDragging) : (_isDragging)) ) ...[
+                if (widget.allowResize) ...[
+                  _buildHandle(
+                    position: 'top',
+                    onPanUpdate: (details) {
+                      setState(() {
+                        double newHeight = (height - details.delta.dy)
+                            .clamp(20.0, double.infinity);
+                        double deltaY = height - newHeight;
+                        pos = Offset(pos.dx, pos.dy + deltaY);
+                        height = newHeight;
+                      });
+                    },
+                  ),
+                  _buildHandle(
+                    position: 'bottom',
+                    onPanUpdate: (details) {
+                      setState(() {
+                        height = (height + details.delta.dy)
+                            .clamp(20.0, double.infinity);
+                      });
+                    },
+                  ),
+                  _buildHandle(
+                    position: 'left',
+                    onPanUpdate: (details) {
+                      setState(() {
+                        double newWidth = (width - details.delta.dx)
+                            .clamp(20.0, double.infinity);
+                        double deltaX = width - newWidth;
+                        pos = Offset(pos.dx + deltaX, pos.dy);
+                        width = newWidth;
+                      });
+                    },
+                  ),
+                  _buildHandle(
+                    position: 'right',
+                    onPanUpdate: (details) {
+                      setState(() {
+                        width = (width + details.delta.dx)
+                            .clamp(20.0, double.infinity);
+                      });
+                    },
+                  ),
+                ],
               ],
             ],
           ),

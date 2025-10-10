@@ -15,10 +15,10 @@ class TAvatar extends StatefulWidget {
     this.text,
     this.size = 'small',
     this.imageUrl,
-    this.icon, 
-    this.foregroundColor, 
-    this.backgroundColor, 
-    this.callback, 
+    this.icon,
+    this.foregroundColor,
+    this.backgroundColor,
+    this.callback,
     this.animationConfig,
   });
 
@@ -26,9 +26,8 @@ class TAvatar extends StatefulWidget {
   State<TAvatar> createState() => _TAvatarState();
 }
 
-class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
-
-   // Animation 
+class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin {
+  // Animation
   late AnimationController _controller;
   Animation<double>? _fadeAnim;
   bool _isFadAnimating = false;
@@ -42,13 +41,13 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
   // Linear Gradient
   Gradient? linearGradient;
 
-    @override
-  void initState(){
+  @override
+  void initState() {
     super.initState();
     _setupAnimations();
   }
 
-    void _setupAnimations() {    
+  void _setupAnimations() {
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
@@ -96,7 +95,8 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
                   ),
                 ).animate(CurvedAnimation(
                   parent: _controller,
-                  curve: curves[props["animationCurve"]["value"]] ?? Curves.linear,
+                  curve:
+                      curves[props["animationCurve"]["value"]] ?? Curves.linear,
                 ));
               });
               break;
@@ -135,7 +135,7 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
 
     _controller.forward();
   }
-  
+
   double _getRadius(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
 
@@ -154,17 +154,17 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
   TextStyle _getTextStyle(BuildContext context) {
     switch (widget.size) {
       case 'small':
-        return Theme.of(context).textTheme.headlineSmall!;  
+        return Theme.of(context).textTheme.headlineSmall!;
       case 'medium':
-        return Theme.of(context).textTheme.headlineMedium!; 
+        return Theme.of(context).textTheme.headlineMedium!;
       case 'large':
-        return Theme.of(context).textTheme.headlineLarge!; 
+        return Theme.of(context).textTheme.headlineLarge!;
       default:
-        return Theme.of(context).textTheme.headlineSmall!; 
+        return Theme.of(context).textTheme.headlineSmall!;
     }
   }
 
-    Widget _applyAnimations(Widget child) {
+  Widget _applyAnimations(Widget child) {
     Widget animated = child;
 
     if (_fadeAnim != null && _isFadAnimating) {
@@ -185,9 +185,7 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
 
   @override
   Widget build(BuildContext context) {
-   
-
-  Color avatarbackgroundcolor = Colors.transparent;
+    Color avatarbackgroundcolor = Colors.transparent;
 
     switch (widget.backgroundColor) {
       case 'primary':
@@ -216,7 +214,7 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
         break;
     }
 
-     Color avatarforegroundcolor = Colors.black;
+    Color avatarforegroundcolor = Colors.black;
     switch (widget.foregroundColor) {
       case "primary":
         avatarforegroundcolor = Theme.of(context).colorScheme.primary;
@@ -244,12 +242,12 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
         break;
     }
 
-     List<String> words = widget.text != null ? widget.text!.split(' ') : [];
+    List<String> words = widget.text != null ? widget.text!.split(' ') : [];
     String initials = '';
 
     if (words.isNotEmpty) {
       initials += words[0][0].toUpperCase();
-      
+
       if (words.length > 1) {
         initials += words.last[0].toUpperCase();
       }
@@ -258,20 +256,21 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
     ImageProvider? imageProvider;
     if (widget.imageUrl != null) {
       setState(() {
-        if (widget.imageUrl!.contains('http') || widget.imageUrl!.contains('https')) {
+        if (widget.imageUrl!.contains('http') ||
+            widget.imageUrl!.contains('https')) {
           imageProvider = NetworkImage(widget.imageUrl!);
         } else {
           imageProvider = AssetImage(widget.imageUrl!);
         }
       });
     }
-    
-    return  _applyAnimations(
-       Visibility(
+
+    return _applyAnimations(
+      Visibility(
         visible: true,
         child: GestureDetector(
-            onTap: () {},
-            child: CircleAvatar(
+          onTap: () {},
+          child: CircleAvatar(
             radius: _getRadius(context),
             backgroundImage: imageProvider,
             backgroundColor: avatarbackgroundcolor,
@@ -284,7 +283,7 @@ class _TAvatarState extends State<TAvatar> with TickerProviderStateMixin  {
                         style: _getTextStyle(context),
                       )
                     : null,
-            ),
+          ),
         ),
       ),
     );
